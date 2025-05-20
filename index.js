@@ -43,27 +43,55 @@ app.post('/identify', async (req, res) => {
         }
       }
 
-      const alreadyExists = allContacts.some(c =>
-        (email && c.email === email) || (phoneNumber && c.phoneNumber === phoneNumber)
-      );
+      // Check if either value exists
+const emailExists = email && allContacts.some(c => c.email === email);
+const phoneExists = phoneNumber && allContacts.some(c => c.phoneNumber === phoneNumber);
 
-      if (!alreadyExists) {
-        await knex('contacts').insert({
-          email: email || null,
-          phoneNumber: phoneNumber || null,
-          linkedId: primaryContact.id,
-          linkPrecedence: 'secondary',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
+const exactMatchExists = allContacts.some(c =>
+  (c.email === (email || null)) && (c.phoneNumber === (phoneNumber || null))
+);
 
-        // Re-fetch all contacts after insertion
-        allContacts = await getAllLinkedContacts([primaryContact]);
-        primaryContact = allContacts.find(c => c.linkPrecedence === 'primary') || allContacts[0];
-      }
+// ✅ EARLY RETURN: one value is null, but the other exists => no insert
+if (!exactMatchExists && (emailExists || phoneExists) && (!email || !phoneNumber)) {
+  const finalContacts = allContacts.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+  const emails = [...new Set(finalContacts.map(c => c.email).filter(Boolean))];
+  const phoneNumbers = [...new Set(finalContacts.map(c => c.phoneNumber).filter(Boolean))];
+  const secondaryContactIds = finalContacts
+    .filter(c => c.id !== primaryContact.id)
+    .map(c => c.id);
+
+  const responseData = {
+    contact: {
+      primaryContactId: primaryContact.id,
+      emails,
+      phoneNumbers,
+      secondaryContactIds,
+    },
+  };
+
+  return res.json(responseData);
+}
+
+// ✅ Otherwise, insert as secondary
+if (!exactMatchExists) {
+  await knex('contacts').insert({
+    email: email || null,
+    phoneNumber: phoneNumber || null,
+    linkedId: primaryContact.id,
+    linkPrecedence: 'secondary',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  // Re-fetch after insertion
+  allContacts = await getAllLinkedContacts([primaryContact]);
+  primaryContact = allContacts.find(c => c.linkPrecedence === 'primary') || allContacts[0];
+}
+
+
 
     } else {
-      // No matches: create primary contact
       // No matches: create primary contact
         const [{ id: newPrimaryId }] = await knex('contacts')
           .insert({
