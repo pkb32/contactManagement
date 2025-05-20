@@ -17,63 +17,75 @@ app.post('/identify', async (req, res) => {
       return res.status(400).json({ error: 'Email or phoneNumber is required' });
     }
 
-    const contacts = await knex('contacts')
+    const initialMatches = await knex('contacts')
       .where(builder => {
         if (email) builder.orWhere('email', email);
         if (phoneNumber) builder.orWhere('phoneNumber', phoneNumber);
-      })
-      .orderBy('createdAt');
-
-    if (contacts.length === 0) {
-      const [newContact] = await knex('contacts')
-        .insert({ email, phoneNumber, linkPrecedence: 'primary' })
-        .returning('*');
-      return res.json({
-        contact: {
-          primaryContactId: newContact.id,
-          emails: [newContact.email].filter(Boolean),
-          phoneNumbers: [newContact.phoneNumber].filter(Boolean),
-          secondaryContactIds: [],
-        },
       });
-    }
 
-    const primaryContact = contacts.find(c => c.linkPrecedence === 'primary') || contacts[0];
-    const secondaryContacts = contacts.filter(c => c.id !== primaryContact.id && c.linkPrecedence !== 'secondary');
+    let allContacts = [];
+    let primaryContact;
 
-    for (const contact of secondaryContacts) {
-      await knex('contacts')
-        .where({ id: contact.id })
-        .update({
-          linkPrecedence: 'secondary',
+    if (initialMatches.length > 0) {
+      allContacts = await getAllLinkedContacts(initialMatches);
+      primaryContact = allContacts.find(c => c.linkPrecedence === 'primary') || allContacts[0];
+
+      // Update conflicting primary to secondary
+      for (const contact of allContacts) {
+        if (contact.id !== primaryContact.id && contact.linkPrecedence === 'primary') {
+          await knex('contacts')
+            .where({ id: contact.id })
+            .update({
+              linkPrecedence: 'secondary',
+              linkedId: primaryContact.id,
+              updatedAt: new Date(),
+            });
+        }
+      }
+
+      const alreadyExists = allContacts.some(c =>
+        (email && c.email === email) || (phoneNumber && c.phoneNumber === phoneNumber)
+      );
+
+      if (!alreadyExists) {
+        await knex('contacts').insert({
+          email: email || null,
+          phoneNumber: phoneNumber || null,
           linkedId: primaryContact.id,
+          linkPrecedence: 'secondary',
+          createdAt: new Date(),
           updatedAt: new Date(),
         });
+
+        // Re-fetch all contacts after insertion
+        allContacts = await getAllLinkedContacts([primaryContact]);
+        primaryContact = allContacts.find(c => c.linkPrecedence === 'primary') || allContacts[0];
+      }
+
+    } else {
+      // No matches: create primary contact
+      // No matches: create primary contact
+        const [{ id: newPrimaryId }] = await knex('contacts')
+          .insert({
+            email: email || null,
+            phoneNumber: phoneNumber || null,
+            linkedId: null,
+            linkPrecedence: 'primary',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .returning('id');
+
+        primaryContact = await knex('contacts').where('id', newPrimaryId).first();
+        allContacts = [primaryContact];
+
     }
 
-    const emailExists = email && contacts.some(c => c.email === email);
-    const phoneExists = phoneNumber && contacts.some(c => c.phoneNumber === phoneNumber);
+    const finalContacts = allContacts.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-    if (!emailExists || !phoneExists) {
-      const [newSecondary] = await knex('contacts')
-        .insert({
-          email,
-          phoneNumber,
-          linkedId: primaryContact.id,
-          linkPrecedence: 'secondary',
-        })
-        .returning('*');
-      contacts.push(newSecondary);
-    }
-
-    const allContacts = await knex('contacts')
-      .where('linkedId', primaryContact.id)
-      .orWhere('id', primaryContact.id)
-      .orderBy('createdAt');
-
-    const emails = [...new Set(allContacts.map(c => c.email).filter(Boolean))];
-    const phoneNumbers = [...new Set(allContacts.map(c => c.phoneNumber).filter(Boolean))];
-    const secondaryContactIds = allContacts
+    const emails = [...new Set(finalContacts.map(c => c.email).filter(Boolean))];
+    const phoneNumbers = [...new Set(finalContacts.map(c => c.phoneNumber).filter(Boolean))];
+    const secondaryContactIds = finalContacts
       .filter(c => c.id !== primaryContact.id)
       .map(c => c.id);
 
@@ -85,9 +97,9 @@ app.post('/identify', async (req, res) => {
         secondaryContactIds,
       },
     };
-
-    console.log("Response: ", responseData);
+    console.log("responseData", responseData);
     return res.json(responseData);
+
   } catch (err) {
     console.error('ERROR in /identify:', err);
     return res.status(500).json({ error: 'Internal Server Error', message: err.message });
@@ -95,22 +107,30 @@ app.post('/identify', async (req, res) => {
 });
 
 
+
 // Helper: walk the graph of linked contacts
-async function getAllLinkedContacts(initialContacts) {
+async function getAllLinkedContacts(initialMatches) {
   const visited = new Set();
-  const toVisit = [...initialContacts];
+  const toVisit = [...initialMatches];
 
   while (toVisit.length > 0) {
     const current = toVisit.pop();
+
     if (visited.has(current.id)) continue;
     visited.add(current.id);
 
     const linked = await knex('contacts')
-      .where('linkedId', current.id)
-      .orWhere('id', current.linkedId || -1);
+      .where(builder => {
+        builder
+          .where('linkedId', current.id)
+          .orWhere('id', current.linkedId || -1)
+          .orWhere('linkedId', current.linkedId || -1);
+      });
 
     for (const c of linked) {
-      if (!visited.has(c.id)) toVisit.push(c);
+      if (!visited.has(c.id)) {
+        toVisit.push(c);
+      }
     }
   }
 
