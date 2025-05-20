@@ -4,6 +4,11 @@ const app = express();
 
 app.use(express.json());
 
+app.get('/', (req, res) => {
+  res.send('Contact management service is up and running!');
+});
+
+
 app.post('/identify', async (req, res) => {
   const { email, phoneNumber } = req.body;
 
