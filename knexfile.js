@@ -1,13 +1,15 @@
+require('dotenv').config();
+
 module.exports = {
   development: {
     client: 'pg',
     connection: {
-      host: 'db.evcohbgbypekeqdzgfgl.supabase.co',
-      user: 'postgres',
-      password: 'Prayash@2002',
-      database: 'postgres',
-      port: 5432,
-      ssl: { rejectUnauthorized: false }  // important for Supabase
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      port: process.env.DB_PORT,
+      ssl: { rejectUnauthorized: false } 
     },
     migrations: {
       directory: './migrations',
